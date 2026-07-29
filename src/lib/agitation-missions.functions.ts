@@ -902,6 +902,14 @@ export const getMissionCooldownStatus = createServerFn({ method: "GET" })
       .single();
     if (!mission) throw new Error("Missão não encontrada");
 
+    const { data: openClaim } = await context.supabase
+      .from("agitation_mission_claims")
+      .select("id")
+      .eq("mission_id", data.mission_id)
+      .eq("user_id", context.userId)
+      .is("completed_at", null)
+      .maybeSingle();
+
     const { data: lastCompleted } = await context.supabase
       .from("agitation_mission_claims")
       .select("completed_at")
@@ -921,17 +929,31 @@ export const getMissionCooldownStatus = createServerFn({ method: "GET" })
       .eq("status", "pending");
 
     const now = Date.now();
+    const hasOpenClaim = !!openClaim;
     let releasesAt: string | null = null;
-    if (lastCompleted?.completed_at) {
+    let blockReason: "open_claim" | "cooldown" | "unavailable" | null = null;
+
+    if (hasOpenClaim) {
+      blockReason = "open_claim";
+    } else if (lastCompleted?.completed_at) {
       releasesAt = new Date(
         new Date(lastCompleted.completed_at).getTime() + mission.cooldown_minutes * 60_000,
       ).toISOString();
+      if (new Date(releasesAt).getTime() > now) {
+        blockReason = "cooldown";
+      }
     }
+
     const canClaim =
       mission.is_open &&
       !mission.paused_at &&
+      !hasOpenClaim &&
       (available ?? 0) > 0 &&
       (!releasesAt || new Date(releasesAt).getTime() <= now);
+
+    if (!canClaim && !blockReason) {
+      blockReason = (available ?? 0) > 0 ? null : "unavailable";
+    }
 
     return {
       is_open: !!mission.is_open,
@@ -940,6 +962,8 @@ export const getMissionCooldownStatus = createServerFn({ method: "GET" })
       cooldown_minutes: mission.cooldown_minutes,
       available_now: available ?? 0,
       releases_at: releasesAt,
+      has_open_claim: hasOpenClaim,
+      block_reason: blockReason,
       can_claim: canClaim,
     };
   });

@@ -247,7 +247,16 @@ function MissionBlockCard({
         )}
         {block.mission.is_open && !block.mission.paused_at && (
           <>
-            {cd && !cd.can_claim && releasesIn && (
+            {cd && !cd.can_claim && cd.block_reason === "open_claim" && (
+              <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2 flex items-start gap-2">
+                <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                <span>
+                  Você já tem uma leva em aberto nesta missão — use &quot;Avisar que concluí&quot;
+                  antes de pegar mais contatos.
+                </span>
+              </div>
+            )}
+            {cd && !cd.can_claim && cd.block_reason === "cooldown" && releasesIn && (
               <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2 flex items-start gap-2">
                 <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
                 <span>
@@ -256,7 +265,7 @@ function MissionBlockCard({
                 </span>
               </div>
             )}
-            {cd && !cd.can_claim && !releasesIn && (
+            {cd && !cd.can_claim && cd.block_reason === "unavailable" && (
               <div className="text-xs text-muted-foreground bg-muted/40 border rounded p-2">
                 Essa missão não tem mais contatos disponíveis no momento.
               </div>
