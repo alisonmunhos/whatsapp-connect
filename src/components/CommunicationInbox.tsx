@@ -8,7 +8,7 @@ import {
   Search, Send, Loader2, Star, StarOff, CheckCircle2, RotateCcw, Paperclip,
   MessageSquare, ExternalLink, AlertTriangle, UserPlus, ArrowLeft, MoreVertical,
   Flag, ClipboardList, StickyNote, Clock, X, PanelRightClose, PanelRightOpen, FileText,
-  Smile, MessageSquareText, Image as ImageIcon, ChevronDown, Bot, Music,
+  Smile, MessageSquareText, Image as ImageIcon, ChevronDown, Bot, Music, Copy, Check,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -21,15 +21,19 @@ import {
   setConversationStatus, toggleConversationFlag, addConversationNote,
   listCommunicationStaff, searchContactsForNewChat,
   linkConversationToContact, getMyCommunicationBadge,
+  addContactTagFromInbox, removeContactTagFromInbox, updateContactFormasAjudaFromInbox,
 } from "@/lib/communication.functions";
 import { listWhatsappFlows, startWhatsappFlowManually } from "@/lib/whatsapp-flows.functions";
 import { windowState } from "@/lib/inbox-window";
+import { getCatalogField } from "@/lib/form-field-catalog";
 
 import { QuickContactFromInboxDialog } from "@/components/QuickContactFromInboxDialog";
 import { SendWhatsAppWizard } from "@/components/SendWhatsAppWizard";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { ContactTagPicker, type InboxTagRow } from "@/components/inbox/ContactTagPicker";
 
 const EmojiPicker = lazy(() => import("emoji-picker-react"));
 
@@ -53,6 +57,10 @@ import {
 import { InboxAvatar } from "@/components/inbox/InboxAvatar";
 
 
+
+// Mesmo catálogo usado no construtor de formulários e na Gestão da Base —
+// nunca duplicar a lista de opções aqui.
+const FORMAS_AJUDA_OPTIONS = getCatalogField("formas_ajuda")?.options ?? [];
 
 /** Mostra a razão real da falha; traduz o erro de janela de 24h da Meta. */
 function describeSendError(erro?: string | null): string {
@@ -163,6 +171,9 @@ export function CommunicationInbox() {
   const searchNewFn = useServerFn(searchContactsForNewChat);
   const signFn = useServerFn(signCampaignMediaUpload);
   const linkFn = useServerFn(linkConversationToContact);
+  const addTagFn = useServerFn(addContactTagFromInbox);
+  const removeTagFn = useServerFn(removeContactTagFromInbox);
+  const formasAjudaFn = useServerFn(updateContactFormasAjudaFromInbox);
   const [quickCreateOpen, setQuickCreateOpen] = useState(false);
   const [templateSendOpen, setTemplateSendOpen] = useState(false);
 
@@ -361,6 +372,65 @@ export function CommunicationInbox() {
       toast.success("Nota adicionada");
     },
   });
+
+  // Painel do contato: tags e formas de ajuda salvam a cada clique, sem toast
+  // de sucesso (só erro gera toast) — um "✓" discreto (savedFlash) confirma
+  // pra não virar ruído a cada interação.
+  const [savedFlash, setSavedFlash] = useState<"tags" | "formas_ajuda" | null>(null);
+  function flashSaved(key: "tags" | "formas_ajuda") {
+    setSavedFlash(key);
+    window.setTimeout(() => setSavedFlash((cur) => (cur === key ? null : cur)), 1500);
+  }
+
+  const addTagMut = useMutation({
+    mutationFn: (v: { contact_id: string; tag_id: string }) => addTagFn({ data: v }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["comm-conv", convKey] });
+      flashSaved("tags");
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Erro ao adicionar tag"),
+  });
+
+  const removeTagMut = useMutation({
+    mutationFn: (v: { contact_id: string; tag_id: string }) => removeTagFn({ data: v }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["comm-conv", convKey] });
+      flashSaved("tags");
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Erro ao remover tag"),
+  });
+
+  const formasAjudaMut = useMutation({
+    mutationFn: (v: { contact_id: string; formas_ajuda: string[] }) => formasAjudaFn({ data: v }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["comm-conv", convKey] });
+      flashSaved("formas_ajuda");
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Erro ao salvar formas de ajuda"),
+  });
+
+  const [copiedContact, setCopiedContact] = useState(false);
+  function copyContactFormatted() {
+    const c = convQ.data?.contact;
+    if (!c) return;
+    const lines: string[] = [];
+    if (c.nome) lines.push(`Nome: ${c.nome}`);
+    const phone = c.phone_e164 ?? conv?.from_phone ?? null;
+    if (phone) lines.push(`Telefone: ${phone}`);
+    if (c.endereco_completo) lines.push(`Endereço: ${c.endereco_completo}`);
+    if (c.profissao) lines.push(`Profissão: ${c.profissao}`);
+    if (Array.isArray(c.formas_ajuda) && c.formas_ajuda.length > 0) {
+      const labels = c.formas_ajuda.map(
+        (v) => FORMAS_AJUDA_OPTIONS.find((o) => o.value === v)?.label ?? v,
+      );
+      lines.push(`Formas de ajuda: ${labels.join(", ")}`);
+    }
+    if (c.observacoes) lines.push(`Observações: ${c.observacoes}`);
+    if (lines.length === 0) return;
+    void navigator.clipboard.writeText(lines.join("\n"));
+    setCopiedContact(true);
+    window.setTimeout(() => setCopiedContact(false), 1500);
+  }
 
   const linkMut = useMutation({
     mutationFn: (v: { conversation_id: string; contact_id: string }) => linkFn({ data: v }),
@@ -1494,32 +1564,63 @@ export function CommunicationInbox() {
               {contact.opt_out_at && (
                 <div className="text-destructive font-medium">Opt-out ativo desde {fmtDate(contact.opt_out_at)}</div>
               )}
-              {Array.isArray(contact.formas_ajuda) && contact.formas_ajuda.length > 0 && (
-                <div>
-                  <div className="text-muted-foreground mb-1">Formas de ajuda:</div>
-                  <div className="flex flex-wrap gap-1">
-                    {contact.formas_ajuda.map((f) => (
-                      <span key={f} className="px-1.5 py-0.5 rounded bg-muted text-[10px]">{f}</span>
-                    ))}
-                  </div>
+              <div>
+                <div className="flex items-center gap-1.5 mb-1">
+                  <span className="text-muted-foreground">Formas de ajuda:</span>
+                  {savedFlash === "formas_ajuda" && <Check className="h-3 w-3 text-emerald-600" />}
                 </div>
-              )}
-              {(convQ.data?.tags?.length ?? 0) > 0 && (
-                <div>
-                  <div className="text-muted-foreground mb-1">Tags:</div>
-                  <div className="flex flex-wrap gap-1">
-                    {(convQ.data?.tags ?? []).map((t) => (
-                      <span
-                        key={t.id}
-                        className="px-1.5 py-0.5 rounded text-[10px] border"
-                        style={t.cor ? { borderColor: t.cor, color: t.cor } : undefined}
+                <div className="space-y-1">
+                  {FORMAS_AJUDA_OPTIONS.map((opt) => {
+                    const current = Array.isArray(contact.formas_ajuda) ? contact.formas_ajuda : [];
+                    const checked = current.includes(opt.value);
+                    return (
+                      <label key={opt.value} className="flex items-center gap-1.5 cursor-pointer">
+                        <Checkbox
+                          checked={checked}
+                          disabled={formasAjudaMut.isPending}
+                          onCheckedChange={(v) => {
+                            const next = v === true
+                              ? [...current, opt.value]
+                              : current.filter((f) => f !== opt.value);
+                            formasAjudaMut.mutate({ contact_id: contact.id, formas_ajuda: next });
+                          }}
+                        />
+                        <span className="text-[11px]">{opt.label}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+              <div>
+                <div className="flex items-center gap-1.5 mb-1">
+                  <span className="text-muted-foreground">Tags:</span>
+                  {savedFlash === "tags" && <Check className="h-3 w-3 text-emerald-600" />}
+                </div>
+                <div className="flex flex-wrap items-center gap-1">
+                  {(convQ.data?.tags ?? []).map((t) => (
+                    <span
+                      key={t.id}
+                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] border"
+                      style={t.cor ? { borderColor: t.cor, color: t.cor } : undefined}
+                    >
+                      {t.nome}
+                      <button
+                        type="button"
+                        onClick={() => removeTagMut.mutate({ contact_id: contact.id, tag_id: t.id })}
+                        className="hover:opacity-70"
+                        aria-label={`Remover tag ${t.nome}`}
                       >
-                        {t.nome}
-                      </span>
-                    ))}
-                  </div>
+                        <X className="h-2.5 w-2.5" />
+                      </button>
+                    </span>
+                  ))}
+                  <ContactTagPicker
+                    excludeIds={(convQ.data?.tags ?? []).map((t) => t.id)}
+                    onPick={(tag: InboxTagRow) => addTagMut.mutate({ contact_id: contact.id, tag_id: tag.id })}
+                    onCreated={(tag: InboxTagRow) => addTagMut.mutate({ contact_id: contact.id, tag_id: tag.id })}
+                  />
                 </div>
-              )}
+              </div>
               {(convQ.data?.campaign?.length ?? 0) > 0 && (
                 <div>
                   <div className="text-muted-foreground mb-1">Últimas campanhas:</div>
@@ -1532,6 +1633,17 @@ export function CommunicationInbox() {
                   </ul>
                 </div>
               )}
+              <button
+                type="button"
+                onClick={copyContactFormatted}
+                className="w-full inline-flex items-center justify-center gap-1.5 text-[11px] px-2 py-1.5 rounded border hover:bg-muted"
+              >
+                {copiedContact ? (
+                  <><Check className="h-3 w-3" /> Copiado</>
+                ) : (
+                  <><Copy className="h-3 w-3" /> Copiar dados formatados</>
+                )}
+              </button>
             </div>
           )}
 
