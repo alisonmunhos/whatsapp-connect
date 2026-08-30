@@ -242,16 +242,28 @@ export const getConversation = createServerFn({ method: "GET" })
     const effectiveContactId = data.contact_id ?? convRow?.contact_id ?? null;
 
     type Contact = {
-      id: string; nome: string | null; phone_e164: string | null; phone_whatsapp_candidate: string | null;
-      cidade: string | null; uf: string | null; bairro: string | null; opt_out_at: string | null;
-      consentimento_whatsapp: boolean | null; whatsapp_status: string | null;
-      profissao: string | null; formas_ajuda: string[] | null;
+      id: string;
+      nome: string | null;
+      phone_e164: string | null;
+      phone_whatsapp_candidate: string | null;
+      cidade: string | null;
+      uf: string | null;
+      bairro: string | null;
+      opt_out_at: string | null;
+      consentimento_whatsapp: boolean | null;
+      whatsapp_status: string | null;
+      profissao: string | null;
+      formas_ajuda: string[] | null;
+      endereco_completo: string | null;
+      observacoes: string | null;
     };
     let contact: Contact | null = null;
     if (effectiveContactId) {
       const { data: c } = await context.supabase
         .from("contacts")
-        .select("id,nome,phone_e164,phone_whatsapp_candidate,cidade,uf,bairro,opt_out_at,consentimento_whatsapp,whatsapp_status,profissao,formas_ajuda")
+        .select(
+          "id,nome,phone_e164,phone_whatsapp_candidate,cidade,uf,bairro,opt_out_at,consentimento_whatsapp,whatsapp_status,profissao,formas_ajuda,endereco_completo,observacoes",
+        )
         .eq("id", effectiveContactId).maybeSingle();
       contact = c as Contact | null;
     }
@@ -946,6 +958,114 @@ export const addConversationNote = createServerFn({ method: "POST" })
         payload: mentionPayload,
       });
     }
+    return { ok: true };
+  });
+
+// ------- Painel lateral do contato: tags e formas de ajuda editáveis -------
+
+export const addContactTagFromInbox = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) =>
+    z
+      .object({
+        contact_id: z.string().uuid(),
+        tag_id: z.string().uuid(),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data, context }) => {
+    await requireInboxAccess(context.supabase, context.userId);
+    const { error } = await context.supabase
+      .from("contact_tags")
+      .insert({ contact_id: data.contact_id, tag_id: data.tag_id });
+    if (error && error.code !== "23505") throw error; // 23505 = já existe, idempotente
+    return { ok: true };
+  });
+
+export const removeContactTagFromInbox = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) =>
+    z
+      .object({
+        contact_id: z.string().uuid(),
+        tag_id: z.string().uuid(),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data, context }) => {
+    await requireInboxAccess(context.supabase, context.userId);
+    const { error } = await context.supabase
+      .from("contact_tags")
+      .delete()
+      .eq("contact_id", data.contact_id)
+      .eq("tag_id", data.tag_id);
+    if (error) throw error;
+    return { ok: true };
+  });
+
+// Lista de tags ordenada por mais aplicada recentemente em QUALQUER contato do
+// sistema — funciona como "favoritas" automáticas sem mecanismo de favoritar
+// manual: quem a equipe mais usou agora tende a aparecer primeiro no picker.
+export const listTagsForInboxPicker = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    await requireInboxAccess(context.supabase, context.userId);
+    const { data: tags, error } = await context.supabase
+      .from("tags")
+      .select("id,nome,cor,categoria");
+    if (error) throw error;
+    const { data: recent } = await context.supabase
+      .from("contact_tags")
+      .select("tag_id, created_at")
+      .order("created_at", { ascending: false })
+      .limit(500);
+    const order = new Map<string, string>();
+    for (const r of recent ?? []) {
+      const tagId = r.tag_id as string;
+      if (!order.has(tagId)) order.set(tagId, r.created_at as string);
+    }
+    return (tags ?? []).sort((a, b) => {
+      const ao = order.get(a.id as string) ?? "";
+      const bo = order.get(b.id as string) ?? "";
+      return bo.localeCompare(ao);
+    });
+  });
+
+// Cria uma tag nova direto do picker do Inbox. Categoria fixa "interesse" —
+// o operador do Inbox não escolhe categoria (não é exposta na UI); é só uma
+// etiqueta rápida durante o atendimento. Quem quiser reclassificar usa a
+// Gestão de Tags, que já expõe todas as categorias.
+export const createContactTagFromInbox = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ nome: z.string().trim().min(1).max(60) }).parse(d))
+  .handler(async ({ data, context }) => {
+    await requireInboxAccess(context.supabase, context.userId);
+    const { data: row, error } = await context.supabase
+      .from("tags")
+      .insert({ nome: data.nome, categoria: "interesse" })
+      .select("id,nome,cor,categoria")
+      .single();
+    if (error) throw error;
+    return row;
+  });
+
+export const updateContactFormasAjudaFromInbox = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) =>
+    z
+      .object({
+        contact_id: z.string().uuid(),
+        formas_ajuda: z.array(z.string()),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data, context }) => {
+    await requireInboxAccess(context.supabase, context.userId);
+    const { error } = await context.supabase
+      .from("contacts")
+      .update({ formas_ajuda: data.formas_ajuda })
+      .eq("id", data.contact_id);
+    if (error) throw error;
     return { ok: true };
   });
 
